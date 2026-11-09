@@ -1,17 +1,7 @@
 #import <Foundation/Foundation.h>
 #import <CoreAudio/CoreAudio.h>
 
-/**
- * WeType AutoMute Daemon for macOS
- *
- * Automatically fades out background audio (music, video, etc.) when WeChat Keyboard
- * (or any app) activates voice input / microphone, and smoothly fades back in on release.
- *
- * Designed to fix WeChat Keyboard's failure to mute audio over Bluetooth (AirPods / headphones).
- *
- * Author: LeoCMS Developer / justjump
- * License: MIT
- */
+extern void MRMediaRemoteGetNowPlayingApplicationIsPlaying(dispatch_queue_t queue, void (^completion)(BOOL isPlaying));
 
 static BOOL isMuted = NO;
 static int savedVolume = 40;
@@ -31,12 +21,24 @@ static void setVolume(int vol) {
     [as executeAndReturnError:nil];
 }
 
+static BOOL isMediaPlaying(void) {
+    __block int result = -1;
+    MRMediaRemoteGetNowPlayingApplicationIsPlaying(dispatch_get_main_queue(), ^(BOOL isPlaying) {
+        result = isPlaying ? 1 : 0;
+    });
+    
+    NSDate *timeout = [NSDate dateWithTimeIntervalSinceNow:0.04];
+    while (result == -1 && [timeout timeIntervalSinceNow] > 0) {
+        [[NSRunLoop currentRunLoop] runMode:NSDefaultRunLoopMode beforeDate:timeout];
+    }
+    return (result == 1);
+}
+
 static void fastFadeOut(void) {
     int cur = getCurrentVolume();
     if (cur > 0) {
         savedVolume = cur;
     }
-    // Fast non-linear 4-step curve (~80ms total)
     int step1 = (int)(savedVolume * 0.65);
     int step2 = (int)(savedVolume * 0.35);
     int step3 = (int)(savedVolume * 0.10);
@@ -52,7 +54,6 @@ static void fastFadeOut(void) {
 
 static void smoothFadeIn(void) {
     int target = savedVolume > 5 ? savedVolume : 40;
-    // Elegant 5-step smooth curve (~150ms total)
     int step1 = (int)(target * 0.15);
     int step2 = (int)(target * 0.40);
     int step3 = (int)(target * 0.65);
@@ -112,22 +113,22 @@ static BOOL checkAnyInputRunning(void) {
     return NO;
 }
 
-int main(int argc, const char * argv[]) {
+int main() {
     @autoreleasepool {
         savedVolume = getCurrentVolume();
-        printf("[wetype-automute] Started. Initial output volume: %d\n", savedVolume);
-        fflush(stdout);
-        
         while (1) {
             BOOL active = checkAnyInputRunning();
             if (active && !isMuted) {
-                isMuted = YES;
-                fastFadeOut();
+                // Check if any media (music/video) is actually playing right now
+                if (isMediaPlaying()) {
+                    isMuted = YES;
+                    fastFadeOut();
+                }
             } else if (!active && isMuted) {
                 smoothFadeIn();
                 isMuted = NO;
             }
-            usleep(25000); // 25ms polling loop (negligible CPU ~0.05%)
+            usleep(25000); // 25ms polling
         }
     }
     return 0;
